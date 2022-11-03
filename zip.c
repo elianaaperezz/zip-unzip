@@ -8,8 +8,9 @@
 #include <fcntl.h>
 #include <unistd.h>
 
-/* Use 16-bit code words */
-#define NUM_CODES 65536
+/* Use 12-bit code words */
+#define NUM_CODES 4095
+int glob_var = NUM_CODES;
 
 /* allocate space for and return a new string s+t */
 char *strappend_str(char *s, char *t);
@@ -24,7 +25,7 @@ char *strappend_char(char *s, char c);
 unsigned int find_encoding(char *dictionary[], char *s);
 
 /* write the code for string s to file */
-void write_code(int fd, char *dictionary[], char *s);
+void write_code(FILE *fd, char *dictionary[], char *s);
 
 /* compress in_file_name to out_file_name */
 void compress(char *in_file_name, char *out_file_name);
@@ -89,7 +90,7 @@ char *strappend_char(char *s, char c)
  */
 unsigned int find_encoding(char *dictionary[], char *s)
 {
-    if (dictionary == NULL || s == NULL)
+    if (s == NULL)
     {
         return NUM_CODES;
     }
@@ -112,9 +113,9 @@ unsigned int find_encoding(char *dictionary[], char *s)
 }
 
 /* write the code for string s to file */
-void write_code(int fd, char *dictionary[], char *s)
+void write_code(FILE *fd, char *dictionary[], char *s)
 {
-    if (dictionary == NULL || s == NULL)
+    if (s == NULL)
     {
         return;
     }
@@ -128,12 +129,32 @@ void write_code(int fd, char *dictionary[], char *s)
     }
 
     // cast the code to an unsigned short to only use 16 bits per code word in the output file
-    unsigned short actual_code = (unsigned short)code;
-    if (write(fd, &actual_code, sizeof(unsigned short)) != sizeof(unsigned short))
+    unsigned int actual_code = (unsigned int)code;
+
+    if (glob_var == NUM_CODES)
     {
-        perror("write");
+    	glob_var = actual_code;
+	return;
+    }
+    
+    unsigned char c[3];
+    c[0] = (unsigned char)((glob_var & 0x00000ff0) >> 4);
+    // top 8 bits, bottom 4 bits combined with top 4 of next, bottom 8 bits
+    c[1] = (unsigned char)((glob_var & 0x0000000f)<<4) | (code & 0x00000f00)>>8;
+    c[2] = (unsigned char)(code & 0x000000ff); 
+
+    int write = fwrite(&c, 8, sizeof(unsigned char), fd); 
+    if (ferror(fd))
+    {
+        perror("fwrite");
         exit(1);
     }
+    if(write != 1)
+    {
+	perror("fwrite");
+	exit(1);
+    }
+    
 }
 
 /* compress in_file_name to out_file_name */
@@ -147,14 +168,16 @@ void compress(char *in_file_name, char *out_file_name)
     }
 
     // open both files
-    int in_fd = open(in_file_name, O_RDONLY);
+    FILE *in_fd;
+    in_fd = fopen(in_file_name, "r");
     if (in_fd < 0)
     {
         perror(in_file_name);
         exit(1);
     }
 
-    int out_fd = open(out_file_name, O_WRONLY|O_CREAT|O_TRUNC, 0644);
+    FILE *out_fd;
+    out_fd = fopen(out_file_name, "w");
     if (out_fd < 0)
     {
         perror(out_file_name);
@@ -173,17 +196,17 @@ void compress(char *in_file_name, char *out_file_name)
     }
 
     // initialize the rest of the dictionary to be NULLs
-    for (unsigned int i=256; i<NUM_CODES; ++i)
+    for (unsigned int i=256; i<=NUM_CODES-1; ++i)
     {
         dictionary[i] = NULL;
     }
 
     char *cur_str;
-    char cur_char;
+    unsigned char cur_char;
 
     // CurrentString = first input character
-    int read_return = read(in_fd, &cur_char, sizeof(char));
-    if (read_return < 0)
+    int read_return = fread(&cur_char, 1, sizeof(char), in_fd);
+    if (ferror(in_fd))
     {
         perror("read");
         exit(1);
@@ -196,15 +219,15 @@ void compress(char *in_file_name, char *out_file_name)
     cur_str = strappend_char("\0", cur_char);
 
     // CurrentChar = next input character
-    read_return = read(in_fd, &cur_char, sizeof(char));
-    if (read_return < 0)
+    read_return = fread(&cur_char, 1, sizeof(char), in_fd);
+    if (ferror(in_fd))
     {
         perror("read");
         exit(1);
     }
 
     // While there are more input characters
-    while (read_return != 0)
+    while (!feof(in_fd))
     {
         // hold CurrentString+CurrentChar in a temp variable
         char *tmp = strappend_char(cur_str, cur_char);
@@ -223,7 +246,7 @@ void compress(char *in_file_name, char *out_file_name)
         else
         {
             // only add tmp to dictionary if there are codes left 
-            if (next_code < NUM_CODES)
+            if (next_code < NUM_CODES-1)
             {
                 // Add CurrentString+CurrentChar to Dictionary
                 dictionary[next_code] = strdup(tmp);
@@ -243,10 +266,10 @@ void compress(char *in_file_name, char *out_file_name)
         free(tmp);
 
         // read the next char
-        read_return = read(in_fd, &cur_char, sizeof(char));
-        if (read_return < 0)
+        read_return = fread(&cur_char, 1, sizeof(char), in_fd);
+        if (ferror(in_fd))
         {
-            perror("read");
+            perror("fread");
             exit(1);
         }
     }
@@ -254,22 +277,23 @@ void compress(char *in_file_name, char *out_file_name)
     // CodeWord = CurrentString's code in Dictionary
     // Output CodeWord
     write_code(out_fd, dictionary, cur_str);
-
+    
+    write_code(out_fd, dictionary, NULL);
     // free the last memory allocated for cur_str
     free(cur_str);
 
     // close the files
-    if (close(in_fd) < 0)
+    if (fclose(in_fd) < 0)
     {
-        perror("close");
+        perror("fclose");
     }
-    if (close(out_fd) < 0)
+    if (fclose(out_fd) < 0)
     {
-        perror("close");
+        perror("fclose");
     }
 
     // free all memory in the dictionary
-    for (unsigned int i=0; i<NUM_CODES; ++i)
+    for (unsigned int i=0; i<=NUM_CODES-1; ++i)
     {
         if (dictionary[i] == NULL)
         {
@@ -279,4 +303,5 @@ void compress(char *in_file_name, char *out_file_name)
     }
 
     return;
+  
 }

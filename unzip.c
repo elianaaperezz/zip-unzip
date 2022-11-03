@@ -8,8 +8,9 @@
 #include <fcntl.h>
 #include <unistd.h>
 
-/* Use 16-bit code words */
-#define NUM_CODES 65536
+/* Use 12-bit code words */
+#define NUM_CODES 4095
+unsigned int globvar1 = NUM_CODES;
 
 /* allocate space for and return a new string s+c */
 char *strappend_char(char *s, char c);
@@ -18,7 +19,7 @@ char *strappend_char(char *s, char c);
  * return NUM_CODES on EOF
  * return the code read otherwise
  */
-unsigned int read_code(int fd);
+unsigned int read_code(FILE *fd);
 
 /* uncompress in_file_name to out_file_name */
 void uncompress(char *in_file_name, char *out_file_name);
@@ -65,23 +66,46 @@ char *strappend_char(char *s, char c)
  * return NUM_CODES on EOF
  * return the code read otherwise
  */
-unsigned int read_code(int fd)
+unsigned int read_code(FILE *fd)
 {
     // code words are 16-bit unsigned shorts in the file
-    unsigned short actual_code;
-    int read_return = read(fd, &actual_code, sizeof(unsigned short));
-
-    // if we hit EOF, return NUM_CODES
-    if (read_return == 0)
+    unsigned int actual_code;
+    unsigned int nextword;
+    if(globvar1 != NUM_CODES)
     {
-        return NUM_CODES;
+	nextword = globvar1;
+	globvar1 = NUM_CODES;
+	return nextword;
+	if (nextword == NUM_CODES)
+	{
+	    return NUM_CODES;
+	}
     }
-
-    // if we didn't read 2 bytes, error out 
-    if (read_return != sizeof(unsigned short))
+    else
     {
-        perror("read");
-        exit(1);
+	unsigned char c[3];	
+	fread(c, sizeof(unsigned char), 3, fd);
+	if (feof(fd))
+        {
+           return NUM_CODES;
+   	} 
+        if (ferror(fd))
+        {
+           perror("fread");
+           exit(1);
+        }
+	
+	globvar1 = (unsigned int)(c[0] << 4) | (c[1] >> 4);
+	nextword = (unsigned int)((c[1] & 0x0000000f) << 8) | c[2]; 
+ 	
+ 	if(nextword == 4095)
+	{
+	    return NUM_CODES;
+	}
+	else
+	{
+	    return nextword;
+	} 
     }
     return (unsigned int)actual_code;
 }
@@ -97,15 +121,16 @@ void uncompress(char *in_file_name, char *out_file_name)
     }
 
     // open both files
-    int in_fd = open(in_file_name, O_RDONLY);
-    if (in_fd < 0)
+    FILE *in_fd;
+    in_fd = fopen(in_file_name, "r");
+    if (ferror(in_fd))
     {
         perror(in_file_name);
         exit(1);
     }
-
-    int out_fd = open(out_file_name, O_WRONLY|O_CREAT|O_TRUNC, 0644);
-    if (out_fd < 0)
+    FILE *out_fd;
+    out_fd = fopen(out_file_name, "w");
+    if (ferror(out_fd))
     {
         perror(out_file_name);
         exit(1);
@@ -139,9 +164,9 @@ void uncompress(char *in_file_name, char *out_file_name)
     char *cur_str = dictionary[cur_code];
     if (cur_str == NULL)
     {
-        printf("Algorithm error!\n");
-        exit(1);
-    }
+	printf("Algorithm error!\n");
+	exit(1);
+    } 
     int cur_str_length = strlen(cur_str);
     if (cur_str_length != 1)
     {
@@ -150,12 +175,18 @@ void uncompress(char *in_file_name, char *out_file_name)
     }
 
     // Output CurrentChar
-    if (write(out_fd, cur_str, cur_str_length) != cur_str_length)
+    int write = fwrite(&cur_str, 1, cur_str_length, out_fd);
+    if (ferror(out_fd))
     {
-        perror("write");
+        perror("fwrite");
         exit(1);
     }
 
+    if (write != cur_str_length)
+    {
+	printf("fwrite\n");
+	exit(1);
+    }
     char cur_char = cur_str[0];
 
     // have to track if cur_str needs to be free()'ed each iteration
@@ -194,13 +225,19 @@ void uncompress(char *in_file_name, char *out_file_name)
         }
 
         // Output CurrentString
-        cur_str_length = strlen(cur_str);
-        if (write(out_fd, cur_str, cur_str_length) != cur_str_length)
+        int cur_str_length = strlen(cur_str);
+	int write = fwrite(&cur_str, 1, cur_str_length, out_fd);
+       
+        if (ferror(out_fd))
         {
-            perror("write");
+            perror("fwrite");
             exit(1);
         }
-
+	if (write != cur_str_length)
+	{
+	    printf("fwrite");
+	    exit(1);
+	}
         // CurrentChar = first character in CurrentString
         cur_char = cur_str[0];
 
@@ -219,17 +256,17 @@ void uncompress(char *in_file_name, char *out_file_name)
     }
 
     // close the files
-    if (close(in_fd) < 0)
+    if (fclose(in_fd) < 0)
     {
-        perror("close");
+        perror("fclose");
     }
-    if (close(out_fd) < 0)
+    if (fclose(out_fd) < 0)
     {
-        perror("close");
+        perror("fclose");
     }
 
     // free all memory in the dictionary
-    for (unsigned int i=0; i<NUM_CODES; ++i)
+    for (unsigned int i=0; i<=NUM_CODES-1; ++i)
     {
         if (dictionary[i] == NULL)
         {
