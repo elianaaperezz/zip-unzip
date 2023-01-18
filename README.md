@@ -1,3 +1,3 @@
-# csci2271-a7-template
-An assignment to implement a less simple version of zip and unzip.
+# Zip and Unzip
+Project in C to compress and decompress files.
 # zip-unzip
